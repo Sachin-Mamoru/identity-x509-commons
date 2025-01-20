@@ -58,16 +58,19 @@ import org.bouncycastle.operator.DigestCalculatorProvider;
 import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
 import org.wso2.carbon.base.ServerConfiguration;
 import org.wso2.carbon.context.PrivilegedCarbonContext;
+import org.wso2.carbon.identity.configuration.mgt.core.constant.ConfigurationConstants;
+import org.wso2.carbon.identity.configuration.mgt.core.exception.ConfigurationManagementException;
+import org.wso2.carbon.identity.configuration.mgt.core.model.*;
 import org.wso2.carbon.identity.core.util.IdentityConfigParser;
 import org.wso2.carbon.identity.x509Certificate.validation.cache.CRLCache;
 import org.wso2.carbon.identity.x509Certificate.validation.cache.CRLCacheEntry;
 import org.wso2.carbon.identity.x509Certificate.validation.internal.CertValidationDataHolder;
 import org.wso2.carbon.identity.x509Certificate.validation.model.CACertificate;
+import org.wso2.carbon.identity.x509Certificate.validation.model.CertificateStore;
 import org.wso2.carbon.identity.x509Certificate.validation.model.Validator;
 import org.wso2.carbon.identity.x509Certificate.validation.validator.RevocationValidator;
 import org.wso2.carbon.registry.core.Collection;
 import org.wso2.carbon.registry.core.Registry;
-import org.wso2.carbon.registry.core.Resource;
 import org.wso2.carbon.registry.core.exceptions.RegistryException;
 import org.wso2.carbon.user.api.UserStoreException;
 import org.wso2.carbon.utils.CarbonUtils;
@@ -115,6 +118,8 @@ import java.util.Map;
 import javax.xml.namespace.QName;
 import javax.xml.stream.XMLStreamException;
 
+import static org.wso2.carbon.identity.configuration.mgt.core.constant.ConfigurationConstants.ErrorMessages.ERROR_CODE_RESOURCE_TYPE_ALREADY_EXISTS;
+import static org.wso2.carbon.identity.configuration.mgt.core.constant.ConfigurationConstants.ErrorMessages.ERROR_CODE_RESOURCE_TYPE_DOES_NOT_EXISTS;
 import static org.wso2.carbon.registry.core.RegistryConstants.PATH_SEPARATOR;
 
 /**
@@ -133,13 +138,10 @@ public class CertificateValidationUtil {
      * Util methods for Validator Configurations.
      * ********************************************
      */
-    public static void addDefaultValidationConfigInRegistry(String tenantDomain) {
+    public static void addDefaultValidationConfigInRegistry() {
 
         File validatorConfigFile = getValidatorConfigFile();
         if (validatorConfigFile != null) {
-            if (tenantDomain == null) {
-                tenantDomain = PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantDomain();
-            }
 
             InputStream inputStream = null;
             try {
@@ -154,16 +156,16 @@ public class CertificateValidationUtil {
                     OMElement childElement = (OMElement) iterator.next();
                     if (isValidatorConfigProperty(childElement)) {
                         validatorChildElement = childElement;
-                        addDefaultValidatorConfig(childElement, tenantDomain);
+                        addDefaultValidatorConfig(childElement);
                     } else if (isTrustStoreConfigProperty(childElement)) {
                         trustStoresElement = childElement;
                     }
                 }
                 if (trustStoresElement != null) {
-                    addDefaultCACertificates(trustStoresElement, validatorChildElement, tenantDomain);
+                    addDefaultCACertificates(trustStoresElement, validatorChildElement);
                 }
 
-            } catch (XMLStreamException | FileNotFoundException e) {
+            } catch (XMLStreamException | FileNotFoundException | CertificateValidationException e) {
                 log.warn("Error while loading default validator configurations to the registry.", e);
             } finally {
                 try {
@@ -207,27 +209,15 @@ public class CertificateValidationUtil {
             throws CertificateValidationException {
 
         String validatorConfRegPath = X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH;
-        List<RevocationValidator> validators = null;
 
-        try {
-            if (log.isDebugEnabled()) {
-                log.debug("Loading X509 certificate validator configurations from registry in: " +
-                        validatorConfRegPath);
-            }
-            //get tenant registry for loading validator configurations
-            Registry registry = getGovernanceRegistry(
-                    PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantDomain());
-            if (registry.resourceExists(validatorConfRegPath)) {
-                if (log.isDebugEnabled()) {
-                    log.debug("Validator configurations are available in registry path: " + validatorConfRegPath);
-                }
-                validators = getEnabledValidatorsFromRegistryResource(registry, validatorConfRegPath);
-            }
-        } catch (RegistryException e) {
-            throw new CertificateValidationException("Error while loading validator configurations from registry in: " +
-                    validatorConfRegPath, e);
+        if (log.isDebugEnabled()) {
+            log.debug("Loading X509 certificate validator configurations from registry in: " +
+                    validatorConfRegPath);
         }
-        return validators;
+        if (log.isDebugEnabled()) {
+            log.debug("Validator configurations are available in registry path: " + validatorConfRegPath);
+        }
+        return getEnabledValidatorsFromConfiguration(validatorConfRegPath);
     }
 
     private static File getValidatorConfigFile() {
@@ -254,30 +244,41 @@ public class CertificateValidationUtil {
         return childElement.getLocalName().equals(X509CertificateValidationConstants.VALIDATOR_CONF);
     }
 
-    private static void addDefaultValidatorConfig(OMElement validatorsElement, String tenantDomain) {
+    private static void addDefaultValidatorConfig(OMElement validatorsElement) throws CertificateValidationException {
 
         List<Validator> defaultValidatorConfig = getDefaultValidatorConfig(validatorsElement);
 
         // iterate through the validator config list and write to the registry
         for (Validator validator : defaultValidatorConfig) {
-            String validatorConfRegPath = X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH +
-                    PATH_SEPARATOR + getNormalizedName(validator.getDisplayName());
+            String validatorConfRegPath = X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH;
             if (log.isDebugEnabled()) {
                 log.debug("Adding default validator configurations to registry in: " +
                         validatorConfRegPath);
             }
             try {
-                Registry registry = getGovernanceRegistry(tenantDomain);
-                if (!registry.resourceExists(validatorConfRegPath)) {
-                    addValidatorConfigInRegistry(registry, validatorConfRegPath, validator);
-                    if (log.isDebugEnabled()) {
-                        log.debug(String.format("Validator configuration for %s is added to %s tenant registry.",
-                                validator.getDisplayName(), tenantDomain));
+                CertValidationDataHolder.getInstance().getConfigurationManager()
+                        .getResourcesByType(validatorConfRegPath);
+            } catch (ConfigurationManagementException e) {
+                if (ERROR_CODE_RESOURCE_TYPE_DOES_NOT_EXISTS.getCode().equals(e.getErrorCode())) {
+                    ResourceTypeAdd resourceTypeAdd = new ResourceTypeAdd();
+                    resourceTypeAdd.setName(X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH);
+                    try {
+                        CertValidationDataHolder.getInstance().getConfigurationManager().addResourceType(resourceTypeAdd);
+                    } catch (ConfigurationManagementException ex) {
+                        if (log.isDebugEnabled()) {
+                            log.debug("Error while adding resource type: " + X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH, ex);
+                        }
                     }
+                    if (log.isDebugEnabled()) {
+                        log.debug(String.format("Validator configuration for %s is added to %s tenant config " +
+                                        "store.",
+                                validator.getDisplayName()));
+                    }
+                } else {
+                    log.error("Error while adding validator configurations.", e);
                 }
-            } catch (RegistryException | CertificateValidationException e) {
-                log.error("Error while adding validator configurations in registry.", e);
             }
+            addValidatorConfigInRegistry(X509CertificateValidationConstants.VALIDATOR_CONF_REG_PATH, validator);
         }
     }
 
@@ -308,21 +309,59 @@ public class CertificateValidationUtil {
         return defaultValidatorConfig;
     }
 
-    private static void addValidatorConfigInRegistry(Registry registry, String validatorConfRegPath,
-                                                     Validator validator) throws RegistryException {
+    private static void addValidatorConfigInRegistry(String validatorConfRegPath,
+                                                     Validator validator) throws CertificateValidationException {
 
-        Resource resource = registry.newResource();
-        resource.addProperty(X509CertificateValidationConstants.VALIDATOR_CONF_NAME, validator.getName());
-        resource.addProperty(X509CertificateValidationConstants.VALIDATOR_CONF_ENABLE,
-                Boolean.toString(validator.isEnabled()));
-        resource.addProperty(X509CertificateValidationConstants.VALIDATOR_CONF_PRIORITY,
-                Integer.toString(validator.getPriority()));
-        resource.addProperty(X509CertificateValidationConstants.VALIDATOR_CONF_FULL_CHAIN_VALIDATION,
-                Boolean.toString(validator.isFullChainValidationEnabled()));
-        resource.addProperty(X509CertificateValidationConstants.VALIDATOR_CONF_RETRY_COUNT,
-                Integer.toString(validator.getRetryCount()));
-        registry.put(validatorConfRegPath, resource);
+        // Build a new resource from the validator configuration.
+        Resource newResource = buildResourceFromValidator(validator, getNormalizedName(validator.getDisplayName()),
+                validatorConfRegPath);
+        addResource(newResource);
     }
+
+    /**
+     * Method to add a resource.
+     *
+     * @param newResource   New resource to be added.
+     * @return  Added resource.
+     * @throws CertificateValidationException If an error occurred when adding a new resource.
+     */
+    private static Resource addResource(Resource newResource) throws CertificateValidationException {
+
+        try {
+            return CertValidationDataHolder.getInstance().getConfigurationManager().addResource(newResource.getResourceType(),
+                    newResource);
+        } catch (ConfigurationManagementException e) {
+            throw new CertificateValidationException("Error while adding a new resource.", e);
+        }
+    }
+
+    /**
+     * Builds a Resource object from the Validator configuration.
+     *
+     * @param validator     Validator configuration object.
+     * @param resourceName  Resource name.
+     * @param resourceType  Resource type.
+     * @return A new Resource object with the validator's properties.
+     */
+    private static Resource buildResourceFromValidator(Validator validator, String resourceName, String resourceType) {
+
+        Resource resource = new Resource(resourceName, resourceType);
+        resource.setHasAttribute(true);
+        List<Attribute> attributes = new ArrayList<>();
+        attributes.add(new Attribute(X509CertificateValidationConstants.VALIDATOR_CONF_NAME, validator.getName()));
+        attributes.add(new Attribute(X509CertificateValidationConstants.VALIDATOR_CONF_ENABLE,
+                Boolean.toString(validator.isEnabled())));
+        attributes.add(new Attribute(X509CertificateValidationConstants.VALIDATOR_CONF_PRIORITY,
+                Integer.toString(validator.getPriority())));
+        attributes.add(new Attribute(X509CertificateValidationConstants.VALIDATOR_CONF_FULL_CHAIN_VALIDATION,
+                Boolean.toString(validator.isFullChainValidationEnabled())));
+        attributes.add(new Attribute(X509CertificateValidationConstants.VALIDATOR_CONF_RETRY_COUNT,
+                Integer.toString(validator.getRetryCount())));
+        resource.setAttributes(attributes);
+
+        return resource;
+    }
+
 
     private static Map<String, String> getValidatorProperties(OMElement validatorElement) {
 
@@ -340,16 +379,17 @@ public class CertificateValidationUtil {
         return validatorProperties;
     }
 
-    private static List<RevocationValidator> getEnabledValidatorsFromRegistryResource(Registry registry,
-                                                                                      String validatorConfRegPath)
-            throws RegistryException {
+    private static List<RevocationValidator> getEnabledValidatorsFromConfiguration(String validatorConfRegPath) throws CertificateValidationException {
 
         List<RevocationValidator> validators = new ArrayList<>();
-        Collection collection = (Collection) registry.get(validatorConfRegPath);
-        if (collection != null) {
-            String[] children = collection.getChildren();
-            for (String child : children) {
-                Resource resource = registry.get(child);
+
+        try {
+            // Fetch all resources of the validator type from the configuration management system.
+            Resources resources = CertValidationDataHolder.getInstance()
+                    .getConfigurationManager()
+                    .getResourcesByType(validatorConfRegPath);
+
+            for (Resource resource : resources.getResources()) {
                 Validator validator = resourceToValidatorObject(resource);
 
                 if (validator.isEnabled()) {
@@ -359,7 +399,8 @@ public class CertificateValidationUtil {
                         Constructor<?> constructor = clazz.getConstructor();
                         revocationValidator = (RevocationValidator) constructor.newInstance();
                     } catch (ClassNotFoundException | InvocationTargetException | NoSuchMethodException |
-                            InstantiationException | IllegalAccessException e) {
+                             InstantiationException | IllegalAccessException e) {
+                        // Log the exception and skip this validator.
                         continue;
                     }
                     revocationValidator.setEnable(validator.isEnabled());
@@ -369,24 +410,55 @@ public class CertificateValidationUtil {
                     validators.add(revocationValidator);
                 }
             }
+        } catch (ConfigurationManagementException e) {
+            throw new CertificateValidationException("Error while fetching validator configurations.", e);
         }
+
         return validators;
     }
 
+    /**
+     * Converts a Resource object into a Validator object.
+     *
+     * @param resource The resource object to convert.
+     * @return A Validator object populated with resource attributes.
+     */
     private static Validator resourceToValidatorObject(Resource resource) {
 
         Validator validator = new Validator();
-        validator.setName(resource.getProperty(X509CertificateValidationConstants.VALIDATOR_CONF_NAME));
-        validator.setEnabled(Boolean.parseBoolean(resource.getProperty(
-                X509CertificateValidationConstants.VALIDATOR_CONF_ENABLE)));
-        validator.setPriority(Integer.parseInt(resource.getProperty(
-                X509CertificateValidationConstants.VALIDATOR_CONF_PRIORITY)));
-        validator.setFullChainValidationEnabled(Boolean.parseBoolean(resource.getProperty(
-                X509CertificateValidationConstants.VALIDATOR_CONF_FULL_CHAIN_VALIDATION)));
-        validator.setRetryCount(Integer.parseInt(resource.getProperty(
-                X509CertificateValidationConstants.VALIDATOR_CONF_RETRY_COUNT)));
+
+        // Extract attributes from the resource.
+        List<Attribute> attributes = resource.getAttributes();
+        if (attributes != null) {
+            for (Attribute attribute : attributes) {
+                String key = attribute.getKey();
+                String value = attribute.getValue();
+
+                switch (key) {
+                    case X509CertificateValidationConstants.VALIDATOR_CONF_NAME:
+                        validator.setName(value);
+                        break;
+                    case X509CertificateValidationConstants.VALIDATOR_CONF_ENABLE:
+                        validator.setEnabled(Boolean.parseBoolean(value));
+                        break;
+                    case X509CertificateValidationConstants.VALIDATOR_CONF_PRIORITY:
+                        validator.setPriority(Integer.parseInt(value));
+                        break;
+                    case X509CertificateValidationConstants.VALIDATOR_CONF_FULL_CHAIN_VALIDATION:
+                        validator.setFullChainValidationEnabled(Boolean.parseBoolean(value));
+                        break;
+                    case X509CertificateValidationConstants.VALIDATOR_CONF_RETRY_COUNT:
+                        validator.setRetryCount(Integer.parseInt(value));
+                        break;
+                    default:
+                        // Ignore unknown attributes.
+                        break;
+                }
+            }
+        }
         return validator;
     }
+
 
     /**
      * ****************************************
@@ -412,19 +484,16 @@ public class CertificateValidationUtil {
                 log.debug("CA certificate registry full path: " + caRegPath);
             }
             caCertificateList = getCACertsFromRegResource(caRegPath);
-        } catch (RegistryException | UnsupportedEncodingException e) {
-            throw new CertificateValidationException("Error while loading CA certificates from registry in:" +
-                    caRegPath, e);
+        } catch (UnsupportedEncodingException e) {
+            throw new CertificateValidationException("Error while loading CA certificates from registry in:", e);
         }
         return caCertificateList;
     }
 
-    private static void addDefaultCACertificates(OMElement trustStoresElement, OMElement validatorChildElement,
-                                                 String tenantDomain) {
+    private static void addDefaultCACertificates(OMElement trustStoresElement, OMElement validatorChildElement) {
 
         try {
             Iterator trustStoreIterator = trustStoresElement.getChildElements();
-            Registry registry = getGovernanceRegistry(tenantDomain);
             List<X509Certificate> trustedCertificates = new ArrayList<>();
 
             while (trustStoreIterator.hasNext()) {
@@ -432,25 +501,16 @@ public class CertificateValidationUtil {
             }
 
             for (X509Certificate certificate : trustedCertificates) {
-                String caCertRegPath = getCACertRegFullPath(certificate);
+                String caCertRegPath = getCACertsRegPath(certificate);
                 if (log.isDebugEnabled()) {
                     log.debug("CA certificate registry path: " + caCertRegPath);
                 }
-                addDefaultCACertificateInRegistry(registry, caCertRegPath, certificate, validatorChildElement);
+                addDefaultCACertificateInRegistry(caCertRegPath, getNormalizedName(certificate.getSerialNumber().toString()), certificate, validatorChildElement);
             }
 
-        } catch (UnsupportedEncodingException | CertificateValidationException e) {
+        } catch (UnsupportedEncodingException e) {
             log.error("Error while adding validator configurations in registry.", e);
         }
-    }
-
-    private static String getCACertRegFullPath(X509Certificate certificate) throws UnsupportedEncodingException {
-
-        return X509CertificateValidationConstants.CA_CERT_REG_PATH +
-                PATH_SEPARATOR +
-                URLEncoder.encode(getNormalizedName(certificate.getSubjectDN().getName()), "UTF-8").
-                        replaceAll("%", ":") + PATH_SEPARATOR +
-                getNormalizedName(certificate.getSerialNumber().toString());
     }
 
     private static String getCACertsRegPath(X509Certificate peerCertificate) throws UnsupportedEncodingException {
@@ -460,56 +520,26 @@ public class CertificateValidationUtil {
                 replaceAll("%", ":");
     }
 
-    private static List<CACertificate> getCACertsFromRegResource(String caRegPath) throws RegistryException,
-            CertificateValidationException {
+    private static List<CACertificate> getCACertsFromRegResource(String caRegPath) {
 
         List<CACertificate> caCertificateList = new ArrayList<>();
-        //get tenant registry for loading validator configurations
-        Registry registry = getGovernanceRegistry(
-                PrivilegedCarbonContext.getThreadLocalCarbonContext().getTenantDomain());
+        CertificateStore certificateStore = CertificateStore.getInstance();
 
-        if (registry.resourceExists(caRegPath)) {
-            Collection collection = (Collection) registry.get(caRegPath);
-            if (collection != null) {
-                String[] children = collection.getChildren();
-                for (String child : children) {
-                    Resource resource = registry.get(child);
-                    CACertificate caCertificate = resourceToCACertObject(resource);
-                    caCertificateList.add(caCertificate);
-                }
-            }
+        if (certificateStore.containsCertificates(caRegPath)) {
+            caCertificateList = certificateStore.getCertificates(caRegPath);
         }
         return caCertificateList;
     }
 
-    private static CACertificate resourceToCACertObject(Resource resource) throws CertificateValidationException {
-
-        List<String> crlUrls;
-        List<String> ocspUrls;
-        X509Certificate x509Certificate;
-        try {
-            String crlUrlReg = resource.getProperty(X509CertificateValidationConstants.CA_CERT_REG_CRL);
-            String ocspUrlReg = resource.getProperty(X509CertificateValidationConstants.CA_CERT_REG_OCSP);
-            crlUrls = Arrays.asList(crlUrlReg.split(
-                    X509CertificateValidationConstants.CA_CERT_REG_CRL_OCSP_SEPERATOR));
-            ocspUrls = Arrays.asList(ocspUrlReg.split(
-                    X509CertificateValidationConstants.CA_CERT_REG_CRL_OCSP_SEPERATOR));
-            byte[] regContent = (byte[]) resource.getContent();
-            x509Certificate = decodeCertificate(new String(regContent));
-        } catch (RegistryException | CertificateException e) {
-            throw new CertificateValidationException("Error when converting registry resource content.", e);
-        }
-        return new CACertificate(crlUrls, ocspUrls, x509Certificate);
-    }
-
-    private static void addDefaultCACertificateInRegistry(Registry registry, String caCertRegPath,
+    private static void addDefaultCACertificateInRegistry(String caCertRegPath, String serialNumber,
                                                           X509Certificate certificate,
                                                           OMElement validatorChildElement) {
 
         List<String> ocspUrls = new ArrayList<>();
         List<String> crlUrls = new ArrayList<>();
         try {
-            if (!registry.resourceExists(caCertRegPath)) {
+            CertificateStore certificateStore = CertificateStore.getInstance();
+            if (!certificateStore.containsCertificate(caCertRegPath, serialNumber)) {
                 List<Validator> defaultValidatorConfig = getDefaultValidatorConfig(validatorChildElement);
                 boolean isSelfSignedCert = isSelfSignedCert(certificate);
                 for (Validator validator : defaultValidatorConfig) {
@@ -524,37 +554,14 @@ public class CertificateValidationUtil {
                         }
                     }
                 }
-                Resource resource = registry.newResource();
-                StringBuilder crlUrlReg = new StringBuilder();
-                if (CollectionUtils.isNotEmpty(crlUrls)) {
-                    for (String crlUrl : crlUrls) {
-                        crlUrlReg.append(crlUrl).append(X509CertificateValidationConstants.
-                                CA_CERT_REG_CRL_OCSP_SEPERATOR);
-                    }
-                }
-
-                StringBuilder ocspUrlReg = new StringBuilder();
-                if (CollectionUtils.isNotEmpty(ocspUrls)) {
-                    for (String ocspUrl : ocspUrls) {
-                        ocspUrlReg.append(ocspUrl).append(X509CertificateValidationConstants.
-                                CA_CERT_REG_CRL_OCSP_SEPERATOR);
-                    }
-                }
-                resource.addProperty(X509CertificateValidationConstants.CA_CERT_REG_CRL, crlUrlReg.toString());
-                resource.addProperty(X509CertificateValidationConstants.CA_CERT_REG_OCSP, ocspUrlReg.toString());
-                resource.setContent(encodeCertificate(certificate));
-                registry.put(caCertRegPath, resource);
+                CACertificate caCertificate = new CACertificate(crlUrls, ocspUrls, certificate);
+                certificateStore.addCertificate(caCertRegPath, serialNumber, caCertificate);
             }
-        } catch (RegistryException e) {
-            log.error("Error adding default ca certificate with serial num:" + certificate.getSerialNumber() +
-                    " in registry.", e);
-        } catch (CertificateException e) {
-            log.error("Error encoding ca certificate with serial num: " + certificate.getSerialNumber() +
-                    " to add in registry.", e);
         } catch (CertificateValidationException e) {
             log.error("Error while validating certificate with serial num: " + certificate.getSerialNumber(), e);
         }
     }
+
 
     private static void getAllTrustedCerts(Iterator trustStoreIterator, List<X509Certificate> trustedCertificates) {
 
@@ -1116,24 +1123,6 @@ public class CertificateValidationUtil {
         }
     }
 
-    /**
-     * Encode X509 Certificate.
-     *
-     * @param certificate certificate to get encoded
-     * @return encoded certificate
-     * @throws CertificateException certificateException
-     */
-    private static String encodeCertificate(X509Certificate certificate) throws CertificateException {
-
-        if (certificate != null) {
-            return Base64.encode(certificate.getEncoded());
-        } else {
-            String errorMsg = "Invalid encoded certificate: \'NULL\'";
-            log.debug(errorMsg);
-            throw new IllegalArgumentException(errorMsg);
-        }
-    }
-
     private static KeyStore loadKeyStoreFromFile(String keyStorePath, String password, String type) {
 
         if (type == null) {
@@ -1181,19 +1170,6 @@ public class CertificateValidationUtil {
             //~!@#;%^*+={}|<>,\\'\\\\"\\\\\\\\()[]
         }
         throw new IllegalArgumentException("Invalid validator name provided : " + name);
-    }
-
-    private static Registry getGovernanceRegistry(String tenantDomain) throws CertificateValidationException {
-
-        Registry registry;
-        try {
-            registry = CertValidationDataHolder.getInstance().getRegistryService().getGovernanceSystemRegistry(
-                    CertValidationDataHolder.getInstance().getRealmService().getTenantManager()
-                            .getTenantId(tenantDomain));
-        } catch (UserStoreException | RegistryException e) {
-            throw new CertificateValidationException("Error while get tenant registry.", e);
-        }
-        return registry;
     }
 
     private static String getJCEProvider() {

@@ -23,6 +23,8 @@ package org.wso2.carbon.identity.x509Certificate.validation;
  */
 public class X509CertificateValidationConstants {
 
+    public static final String VALIDATOR_CONF_RESOURCE_PREFIX = "certificate/validator/";
+    public static final String VALIDATOR_RESOURCE_TYPE = "Validator";
     public static final String CERT_VALIDATION_CONF_DIRECTORY = "security";
     public static final String CERT_VALIDATION_CONF_FILE = "certificate-validation.xml";
     public static final String VALIDATOR_CONF = "Validators";

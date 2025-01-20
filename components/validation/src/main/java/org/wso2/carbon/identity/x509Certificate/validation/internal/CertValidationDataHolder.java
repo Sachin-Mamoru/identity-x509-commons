@@ -18,6 +18,7 @@
 
 package org.wso2.carbon.identity.x509Certificate.validation.internal;
 
+import org.wso2.carbon.identity.configuration.mgt.core.ConfigurationManager;
 import org.wso2.carbon.registry.core.service.RegistryService;
 import org.wso2.carbon.user.core.service.RealmService;
 
@@ -29,6 +30,7 @@ public class CertValidationDataHolder {
     private static RegistryService registryService;
     private static RealmService realmService;
     private static CertValidationDataHolder instance = new CertValidationDataHolder();
+    private ConfigurationManager configurationManager = null;
 
     private CertValidationDataHolder() {
     }
@@ -61,6 +63,16 @@ public class CertValidationDataHolder {
     public void setRegistryService(RegistryService service) {
 
         this.registryService = service;
+    }
+
+    public void setConfigurationManager(ConfigurationManager configurationManager) {
+
+        this.configurationManager = configurationManager;
+    }
+
+    public ConfigurationManager getConfigurationManager() {
+
+        return configurationManager;
     }
 
     /**

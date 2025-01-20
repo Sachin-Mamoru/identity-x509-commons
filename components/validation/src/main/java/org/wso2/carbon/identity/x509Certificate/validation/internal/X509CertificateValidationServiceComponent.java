@@ -27,6 +27,7 @@ import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
 import org.osgi.service.component.annotations.ReferenceCardinality;
 import org.osgi.service.component.annotations.ReferencePolicy;
+import org.wso2.carbon.identity.configuration.mgt.core.ConfigurationManager;
 import org.wso2.carbon.identity.x509Certificate.validation.CertificateValidationUtil;
 import org.wso2.carbon.identity.x509Certificate.validation.service.RevocationValidationManager;
 import org.wso2.carbon.identity.x509Certificate.validation.service.RevocationValidationManagerImpl;
@@ -49,7 +50,7 @@ public class X509CertificateValidationServiceComponent {
 
         context.getBundleContext().registerService(RevocationValidationManager.class.getName(),
                 new RevocationValidationManagerImpl(), null);
-        CertificateValidationUtil.addDefaultValidationConfigInRegistry(null);
+        CertificateValidationUtil.addDefaultValidationConfigInRegistry();
         CertificateValidationUtil.loadCRLDownloadTimeoutFromConfig();
         context.getBundleContext().registerService(RevocationValidator.class.getName(),
                 new CRLValidator(), null);
@@ -108,4 +109,33 @@ public class X509CertificateValidationServiceComponent {
         CertValidationDataHolder.getInstance().setRealmService(null);
     }
 
+    /**
+     * Set the ConfigurationManager.
+     *
+     * @param configurationManager The {@code ConfigurationManager} instance.
+     */
+    @Reference(
+            name = "resource.configuration.manager",
+            service = ConfigurationManager.class,
+            cardinality = ReferenceCardinality.MANDATORY,
+            policy = ReferencePolicy.DYNAMIC,
+            unbind = "unregisterConfigurationManager"
+    )
+    protected void registerConfigurationManager(ConfigurationManager configurationManager) {
+
+        log.debug("Registering the ConfigurationManager in Certificate Validation Service Component.");
+        CertValidationDataHolder.getInstance().setConfigurationManager(configurationManager);
+    }
+
+
+    /**
+     * Unset the ConfigurationManager.
+     *
+     * @param configurationManager The {@code ConfigurationManager} instance.
+     */
+    protected void unregisterConfigurationManager(ConfigurationManager configurationManager) {
+
+        log.debug("Unregistering the ConfigurationManager in Certificate Validation Service Component.");
+        CertValidationDataHolder.getInstance().setConfigurationManager(null);
+    }
 }
